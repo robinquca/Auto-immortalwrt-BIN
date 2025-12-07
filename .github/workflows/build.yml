@@ -11,6 +11,7 @@ env:
   REPO_BRANCH: mt798x-mt799x-6.6-mtwifi
   CONFIG_FILE: mt7987_mt7992.config
   TZ: Asia/Shanghai
+  SOURCE_DIR: immortalwrt
 
 jobs:
   build:
@@ -19,6 +20,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
@@ -43,7 +47,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
-          # 安装 ccache 加速编译
           sudo apt-get install -y ccache
 
       - name: Setup ccache
@@ -52,20 +55,34 @@ jobs:
           key: ${{ env.CONFIG_FILE }}
           max-size: 2G
 
-      - name: Clone ImmortalWrt source
+      - name: Clone or update source code
         run: |
-          git clone -b $REPO_BRANCH --single-branch --filter=blob:none $REPO_URL immortalwrt-mt798x-24.10
+          if [ -d "$SOURCE_DIR/.git" ]; then
+            echo "源码目录存在，执行 git pull 更新..."
+            cd $SOURCE_DIR
+            git fetch origin $REPO_BRANCH
+            git reset --hard origin/$REPO_BRANCH
+            git clean -fd
+            cd ..
+          else
+            echo "首次克隆源码..."
+            rm -rf $SOURCE_DIR
+            git clone -b $REPO_BRANCH --single-branch --filter=blob:none $REPO_URL $SOURCE_DIR
+          fi
 
       - name: Add QModem feed
         run: |
-          cd immortalwrt-mt798x-24.10
-          echo 'src-git qmodem https://github.com/FUjr/QModem.git;main' >> feeds.conf.default
+          cd $SOURCE_DIR
+          # 确保 QModem feed 存在
+          if ! grep -q "qmodem" feeds.conf.default; then
+            echo 'src-git qmodem https://github.com/FUjr/QModem.git;main' >> feeds.conf.default
+          fi
 
       - name: Cache dl directory
         uses: actions/cache@v4
         with:
-          path: immortalwrt-mt798x-24.10/dl
-          key: ${{ runner.os }}-dl-${{ hashFiles('immortalwrt-mt798x-24.10/feeds.conf.default') }}
+          path: ${{ env.SOURCE_DIR }}/dl
+          key: ${{ runner.os }}-dl-${{ hashFiles(format('{0}/feeds.conf.default', env.SOURCE_DIR)) }}
           restore-keys: |
             ${{ runner.os }}-dl-
 
@@ -73,24 +90,24 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            immortalwrt-mt798x-24.10/staging_dir/host
-            immortalwrt-mt798x-24.10/staging_dir/toolchain-*
-          key: ${{ runner.os }}-toolchain-${{ env.CONFIG_FILE }}-${{ hashFiles('immortalwrt-mt798x-24.10/tools/**', 'immortalwrt-mt798x-24.10/toolchain/**') }}
+            ${{ env.SOURCE_DIR }}/staging_dir/host
+            ${{ env.SOURCE_DIR }}/staging_dir/toolchain-*
+          key: ${{ runner.os }}-toolchain-${{ env.CONFIG_FILE }}-v1
           restore-keys: |
             ${{ runner.os }}-toolchain-${{ env.CONFIG_FILE }}-
             ${{ runner.os }}-toolchain-
 
       - name: Update and install feeds
         run: |
-          cd immortalwrt-mt798x-24.10
+          cd $SOURCE_DIR
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          # 强制安装 QModem 以覆盖原有 modem 相关包
+          # 强制安装 QModem 相关包以覆盖原有包
           ./scripts/feeds install -a -f -p qmodem
 
       - name: Configure build
         run: |
-          cd immortalwrt-mt798x-24.10
+          cd $SOURCE_DIR
           cp -f defconfig/$CONFIG_FILE .config
           
           # 取消原有 modem 相关选项
@@ -98,9 +115,11 @@ jobs:
           sed -i '/CONFIG_PACKAGE_luci-app-3ginfo-lite/d' .config
           sed -i '/CONFIG_PACKAGE_luci-app-sms-tool/d' .config
           
-          # 启用 QModem
+          # 启用 QModem 及其依赖
           echo 'CONFIG_PACKAGE_luci-app-qmodem=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-app-qmodem-sms=y' >> .config
+          echo 'CONFIG_PACKAGE_qmodem=y' >> .config
+          echo 'CONFIG_PACKAGE_sms-tool_q=y' >> .config
+          echo 'CONFIG_PACKAGE_quectel-cm-5g=y' >> .config
           
           # 启用 UPnP
           echo 'CONFIG_PACKAGE_luci-app-upnp=y' >> .config
@@ -123,24 +142,26 @@ jobs:
           echo 'CONFIG_CCACHE=y' >> .config
           
           make defconfig
+          
+          # 保存配置文件到仓库
+          cp .config ../config/current.config
 
       - name: Download packages
         run: |
-          cd immortalwrt-mt798x-24.10
+          cd $SOURCE_DIR
           make download -j$(nproc)
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
       - name: Compile toolchain
         run: |
-          cd immortalwrt-mt798x-24.10
-          # 先编译工具链，可被缓存复用
+          cd $SOURCE_DIR
           make tools/install -j$(nproc) || make tools/install -j1 V=s
           make toolchain/install -j$(nproc) || make toolchain/install -j1 V=s
 
       - name: Compile firmware
         run: |
-          cd immortalwrt-mt798x-24.10
+          cd $SOURCE_DIR
           echo "开始编译，使用 $(nproc) 线程..."
           export PATH="/usr/lib/ccache:$PATH"
           make -j$(nproc) || make -j1 V=s
@@ -154,13 +175,33 @@ jobs:
       - name: Prepare artifacts
         run: |
           mkdir -p artifacts
-          cp -rf immortalwrt-mt798x-24.10/bin/targets/*/*/* artifacts/ 2>/dev/null || true
-          # 删除不需要的大文件以节省空间
+          cp -rf $SOURCE_DIR/bin/targets/*/*/* artifacts/ 2>/dev/null || true
           rm -rf artifacts/packages
           rm -f artifacts/*.buildinfo
           rm -f artifacts/*.manifest
           rm -f artifacts/sha256sums
           ls -lh artifacts/
+
+      - name: Save build info to repository
+        run: |
+          mkdir -p config logs
+          
+          # 保存构建信息
+          echo "构建时间: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')" > logs/last_build.txt
+          echo "源码分支: $REPO_BRANCH" >> logs/last_build.txt
+          echo "配置文件: $CONFIG_FILE" >> logs/last_build.txt
+          echo "源码 Commit: $(cd $SOURCE_DIR && git rev-parse HEAD)" >> logs/last_build.txt
+          
+          # 保存 feeds.conf
+          cp $SOURCE_DIR/feeds.conf.default config/feeds.conf.default
+
+      - name: Commit build info
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add config/ logs/ || true
+          git diff --staged --quiet || git commit -m "Update build info $(TZ='Asia/Shanghai' date +'%Y-%m-%d')"
+          git push || true
 
       - name: Get current date
         id: date

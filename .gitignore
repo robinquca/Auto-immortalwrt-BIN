@@ -1,0 +1,14 @@
+# ImmortalWrt 源码目录 (太大，不存入仓库)
+immortalwrt/
+
+# 编译产物
+artifacts/
+
+# 临时文件
+*.tmp
+*.log
+*.bak
+
+# 系统文件
+.DS_Store
+Thumbs.db
