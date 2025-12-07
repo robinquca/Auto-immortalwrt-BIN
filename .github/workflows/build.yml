@@ -1,0 +1,154 @@
+name: Build ImmortalWrt MT798x
+
+on:
+  schedule:
+    # 每周一北京时间 0:00 (UTC 周日 16:00)
+    - cron: '0 16 * * 0'
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-24.10
+  REPO_BRANCH: mt798x-mt799x-6.6-mtwifi
+  CONFIG_FILE: mt7987_mt7992.config
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          echo "释放磁盘空间..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo apt-get remove -y '^llvm-.*' '^dotnet-.*' 'php.*' azure-cli google-cloud-sdk google-chrome-stable firefox powershell mono-devel --fix-missing 2>/dev/null || true
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          df -h
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+
+      - name: Clone ImmortalWrt source
+        run: |
+          git clone -b $REPO_BRANCH --single-branch --filter=blob:none $REPO_URL immortalwrt-mt798x-24.10
+
+      - name: Add QModem feed
+        run: |
+          cd immortalwrt-mt798x-24.10
+          echo 'src-git qmodem https://github.com/FUjr/QModem.git;main' >> feeds.conf.default
+
+      - name: Cache toolchain and build files
+        uses: actions/cache@v4
+        with:
+          path: |
+            immortalwrt-mt798x-24.10/staging_dir
+            immortalwrt-mt798x-24.10/build_dir
+            immortalwrt-mt798x-24.10/dl
+          key: ${{ runner.os }}-build-${{ env.CONFIG_FILE }}-${{ hashFiles('immortalwrt-mt798x-24.10/feeds.conf.default') }}
+          restore-keys: |
+            ${{ runner.os }}-build-${{ env.CONFIG_FILE }}-
+
+      - name: Update and install feeds
+        run: |
+          cd immortalwrt-mt798x-24.10
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          # 强制安装 QModem 以覆盖原有 modem 相关包
+          ./scripts/feeds install -a -f -p qmodem
+
+      - name: Configure build
+        run: |
+          cd immortalwrt-mt798x-24.10
+          cp -f defconfig/$CONFIG_FILE .config
+          
+          # 取消原有 modem 相关选项
+          sed -i '/CONFIG_PACKAGE_luci-app-modem/d' .config
+          sed -i '/CONFIG_PACKAGE_luci-app-3ginfo-lite/d' .config
+          sed -i '/CONFIG_PACKAGE_luci-app-sms-tool/d' .config
+          
+          # 启用 QModem
+          echo 'CONFIG_PACKAGE_luci-app-qmodem=y' >> .config
+          echo 'CONFIG_PACKAGE_luci-app-qmodem-sms=y' >> .config
+          
+          # 启用 UPnP
+          echo 'CONFIG_PACKAGE_luci-app-upnp=y' >> .config
+          
+          # 启用 vlmcsd (KMS 激活服务)
+          echo 'CONFIG_PACKAGE_luci-app-vlmcsd=y' >> .config
+          echo 'CONFIG_PACKAGE_vlmcsd=y' >> .config
+          
+          # 启用 AdGuard Home
+          echo 'CONFIG_PACKAGE_luci-app-adguardhome=y' >> .config
+          echo 'CONFIG_PACKAGE_adguardhome=y' >> .config
+          
+          # 启用 ramfree
+          echo 'CONFIG_PACKAGE_luci-app-ramfree=y' >> .config
+          
+          # 启用 HomeProxy
+          echo 'CONFIG_PACKAGE_luci-app-homeproxy=y' >> .config
+          
+          make defconfig
+
+      - name: Download packages
+        run: |
+          cd immortalwrt-mt798x-24.10
+          make download -j16
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile firmware
+        run: |
+          cd immortalwrt-mt798x-24.10
+          echo "开始编译，使用 $(nproc) 线程..."
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Check disk space
+        if: always()
+        run: df -h
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          cp -rf immortalwrt-mt798x-24.10/bin/targets/*/*/* artifacts/ 2>/dev/null || true
+          # 删除不需要的大文件以节省空间
+          rm -rf artifacts/packages
+          rm -f artifacts/*.buildinfo
+          rm -f artifacts/*.manifest
+          rm -f artifacts/sha256sums
+          ls -lh artifacts/
+
+      - name: Get current date
+        id: date
+        run: echo "date=$(TZ='Asia/Shanghai' date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImmortalWrt-MT7987-MT7992-${{ steps.date.outputs.date }}
+          path: artifacts/
+          retention-days: 30
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.date.outputs.date }}
+          name: ImmortalWrt MT7987/MT7992 Build ${{ steps.date.outputs.date }}
+          body: |
+            自动构建 ImmortalWrt MT7987/MT7992 固件
+            
+            构建时间: ${{ steps.date.outputs.date }}
+            源码分支: ${{ env.REPO_BRANCH }}
+            配置文件: ${{ env.CONFIG_FILE }}
+          files: artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
