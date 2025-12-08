@@ -140,11 +140,19 @@ jobs:
           # qmodem 包默认使用 vendor 驱动 (pcie_mhi)，不需要 generic mhi-wwan
           QMODEM_MK="package/feeds/qmodem/qmodem/Makefile"
           if [ -f "$QMODEM_MK" ]; then
-            # 将 kmod-mhi-wwan 依赖改为条件依赖或移除
+            # 将 kmod-mhi-wwan 依赖改为注释（禁用）
+            sed -i 's/DEPENDS:=.*+kmod-mhi-wwan/# &/g' "$QMODEM_MK" || true
             sed -i 's/+kmod-mhi-wwan/+PACKAGE_luci-app-qmodem_GENERIC_MHI_PCIe_DRIVER:kmod-mhi-wwan/g' "$QMODEM_MK" || true
           fi
           
-          # 4. 修复 AdGuardHome 安装冲突
+          # 3b. 移除有问题的依赖包 Makefile 定义或禁用它们
+          rm -rf package/feeds/packages/python-gevent 2>/dev/null || true
+          rm -rf package/feeds/packages/python-twisted 2>/dev/null || true
+          
+          # 4. 移除 kmod-mt_wifi_osal 问题包
+          rm -rf package/mtk/drivers/mt_hwifi 2>/dev/null || true
+          
+          # 5. 修复 AdGuardHome 安装冲突
           # 情况：AdGuardHome 下载脚本试图将文件移动到 /usr/bin/AdGuardHome，但路径冲突
           # 解决：修改 AdGuardHome 包的安装脚本，清理并正确创建目录
           AGH_INIT="package/feeds/packages/adguardhome/files/etc/init.d/AdGuardHome"
