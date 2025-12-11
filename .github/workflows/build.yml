@@ -1,10 +1,14 @@
-name: Build ImmortalWrt MT798x
+name: Build ImmortalWrt MT762x
 
 on:
-  schedule:
-    - cron: '0 16 * * 0'  # 每周一北京时间 0:00
+  repository_dispatch:
   workflow_dispatch:
-
+    inputs:
+      ssh:
+        description: 'SSH connection to Actions'
+        required: false
+        default: 'true'
+        
 # 添加权限声明，允许创建 Release
 permissions:
   contents: write
@@ -361,7 +365,7 @@ jobs:
           tag_name: v${{ github.run_number }}
           name: ImmortalWrt MT7987/MT7992 #${{ github.run_number }}
           body: |
-            🔧 自动构建 ImmortalWrt MT7987/MT7992 固件
+            🔧 自动构建 ImmortalWrt MT762x 固件
             📅 时间: ${{ github.event.repository.updated_at }}
             🌿 分支: ${{ env.REPO_BRANCH }}
           files: artifacts/*
