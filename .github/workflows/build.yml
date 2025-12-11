@@ -1,13 +1,11 @@
 name: Build ImmortalWrt MT762x
 
 on:
-  repository_dispatch:
   workflow_dispatch:
-    inputs:
-      ssh:
-        description: 'SSH connection to Actions'
-        required: false
-        default: 'true'
+
+# 添加权限声明，允许创建 Release
+permissions:
+  contents: write
         
 # 添加权限声明，允许创建 Release
 permissions:
