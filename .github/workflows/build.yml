@@ -362,7 +362,7 @@ jobs:
       - name: Upload to Actions
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWrt-MT7987-${{ github.run_number }}
+          name: ImmortalWrt-MT762x-${{ github.run_number }}
           path: artifacts/
           retention-days: 30
 
@@ -370,7 +370,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ github.run_number }}
-          name: ImmortalWrt MT7987/MT7992 #${{ github.run_number }}
+          name: ImmortalWrt MT762x #${{ github.run_number }}
           body: |
             🔧 自动构建 ImmortalWrt MT762x 固件
             📅 时间: ${{ github.event.repository.updated_at }}
